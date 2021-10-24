@@ -1,0 +1,230 @@
+### Import packages 
+# Set up to run the circuit   
+from qiskit import *
+from qiskit.compiler import *
+from qiskit.providers.aer import *
+from qiskit.visualization import *
+simulator = QasmSimulator()
+
+from qiskit.tools.monitor import job_monitor
+from qiskit.visualization import plot_histogram, plot_bloch_vector, plot_bloch_multivector
+IBMQ.load_account()
+IBMQ.providers()
+provider = IBMQ.get_provider("ibm-q")
+
+#import packages
+import numpy as np
+import random
+import matplotlib.pyplot as plt
+import itertools
+%matplotlib inline
+
+
+
+
+
+
+#Some useful functions when dealing with N>1
+import itertools
+def kron(Matrices):# with help of Bar Aluf
+    r = Matrices[0]
+    for i in range(1,len(Matrices)):
+        r = np.kron(r,Matrices[i]).tolist()
+    return r
+def swap_matrix(amount_qubits, qubit1, qubit2):
+    N = 2**amount_qubits
+    #Identity matrix of dimentions N
+    I = Id(N)    
+    # There is just one swap gate for a 2 qubit system
+    if amount_qubits == 2:
+        the_swap_matrix = [[1,0,0,0],
+                       [0,0,1,0],
+                       [0,1,0,0],
+                       [0,0,0,1]]
+    
+    if amount_qubits > 2:
+        
+        states = binary(amount_qubits) #note: binary is the function all the way above
+        rows_to_swap = []
+        row_combi = []
+        for i in states:
+            if i[qubit1] != i[qubit2]:                
+                l = list(str(i))
+                del(l[qubit1])
+                del(l[qubit2-1])    
+                i = "".join(l)
+                row_combi.append(i)
+            else:
+                row_combi.append('not')
+        position = [[index for index, element in enumerate(row_combi) if element == i] for i in binary(amount_qubits-2)]
+        
+        for i in position:
+            qubit1,qubit2 = i
+            I[qubit1],I[qubit2] = I[qubit2],I[qubit1]
+        the_swap_matrix = I
+    return the_swap_matrix
+def Id(N):
+    return [[1 if i==j else 0 for i in range(N)] for j in range(N)]
+def binary(N):
+    return [''.join(x) for x in itertools.product('01', repeat=N)]  
+
+
+
+
+
+
+
+def T_circuit(amount_of_R,amount_of_T, RM = None, init_state = None, runs = None, comp = None):
+    amount_of_qubits = amount_of_R + 2 # amount of qubits on the system. (ancilla NOT included)
+
+
+    # generates a random normalized N-qubit state
+    if init_state is None:    
+        init_state = [np.random.rand() for i in range(2**(amount_of_qubits-1))]
+        norm = np.sqrt(sum([i**2 for i in init_state]))
+        init_state = init_state/norm      # normalizes    
+        #print("this is the initial state",init_state)
+
+
+
+    # generates a random 4 by 4 matrix 
+    if RM is None:
+        RM = [[np.random.rand()*10 for i in range(4)] for j in range(4)] # Random elements btw 0 and 10
+    U,D,V = np.linalg.svd(RM) # The single vaule decomposition 
+    normd = D[0]
+    d = [i/normd for i in D] # devision by largest eigenvalue
+    
+
+    
+    # builds the circuit
+    q = QuantumRegister(amount_of_R + 2,'q')
+    c = ClassicalRegister(amount_of_R*amount_of_T + amount_of_qubits - 1,'c' )
+    qc = QuantumCircuit(q,c)
+
+    qc.initialize(init_state,range(amount_of_qubits-1))
+
+    # generates the 8x8 matrix DM
+    DM = [[d[0], 0, 0, 0, np.sqrt(1-d[0]*d[0]), 0, 0, 0], 
+          [0, d[1], 0, 0, 0, np.sqrt(1-d[1]*d[1]), 0, 0], 
+          [0, 0, d[2], 0, 0, 0, np.sqrt(1-d[2]*d[2]), 0],
+          [0, 0, 0, d[3], 0, 0, 0, np.sqrt(1-d[3]*d[3])],
+          [np.sqrt(1-d[0]*d[0]), 0, 0, 0,-d[0], 0, 0, 0], 
+          [0, np.sqrt(1-d[1]*d[1]), 0, 0, 0,-d[1], 0, 0], 
+          [0, 0, np.sqrt(1-d[2]*d[2]), 0, 0, 0,-d[2], 0],
+          [0, 0, 0, np.sqrt(1-d[3]*d[3]), 0, 0, 0,-d[3]]]
+
+
+
+    j=len(c)-1
+    for _ in range(amount_of_T):
+        for i in range(3,amount_of_qubits+1):
+            qc.unitary(V,[amount_of_qubits-i,amount_of_qubits-2],label="V") # i form 3 till Nr
+            qc.unitary(DM,[amount_of_qubits-i,amount_of_qubits-2,amount_of_qubits-1],label="D")# i form 3 till Nr
+            qc.unitary(U,[amount_of_qubits-i,amount_of_qubits-2],label="U")
+            qc.measure([amount_of_qubits-1],[j]) # j from 8 till 5
+            j-=1
+            qc.barrier()
+
+    qc.measure(range(amount_of_qubits-1),range(amount_of_qubits-1))
+
+#    display(qc.draw('mpl'))
+    if runs is None:
+        runs = 4e5*amount_of_T*amount_of_R
+
+    if comp is None:
+         # prepare for execution
+        compiled_circuit=transpile(qc,simulator)#,basis_gates=['u3','cx'],optimization_level=3)
+        my_qobj = assemble(compiled_circuit)
+        job=simulator.run(my_qobj,shots=runs)
+        result=job.result()
+        counts=result.get_counts()
+        #stateV=result.get_statevector(decimals=3)
+        #print(len(counts),counts) 
+
+    if comp is not None:
+        backend = provider.get_backend(comp)
+        qc = transpile(qc,backend,basis_gates=['id', 'rz', 'sx', 'x', 'cx', 'reset'],optimization_level=3)
+        print(qc.depth())
+       # display(qc.draw('mpl'))
+        counts = {}
+        [counts.setdefault(i,0) for i in binary(amount_of_R*amount_of_T + amount_of_qubits - 1)]
+        
+        for _ in range(int(runs/8192)):
+            job = backend.run(qc,shots=8192) # the command run() does not transpile automatically 
+            retrieved_job = backend.retrieve_job(job.job_id())
+            job_monitor(job)
+            result = retrieved_job.result()
+            counts_this_job = result.get_counts()
+            for i in counts_this_job.keys():
+                counts[i] += counts_this_job[i]
+        
+        
+    # collects the relevant histogram
+    states = list(counts.keys())
+    hist   = list(counts.values())
+        
+    x1, y1 = [], []
+    tot = 0.0
+    for v in states:
+        if int(v,base=2) <2**(amount_of_qubits-1):
+           x1.append(int(v,base=2))
+           y1.append(counts[v])
+           tot = tot + counts[v]
+
+    print("success runs: ",tot)
+    y1 = [np.sqrt(i/tot) for i in y1]
+
+    
+    # generates the expected histogram
+    x2 = range(2**(amount_of_qubits-1))
+    y2 = []
+    pre_R_layer = [RM]
+    [pre_R_layer.append(([Id(2)]*(amount_of_qubits-1))[i]) for i in range(amount_of_R-1)]
+    R_layer = kron(pre_R_layer)
+    operator = []
+    S_all = [(swap_matrix(amount_of_qubits-1,i,i+1)) for i in range(1,amount_of_R)]
+    for _ in range(amount_of_T):    
+        for i in range(amount_of_R-1,-1,-1):
+            for j in range(i):
+                operator.append(S_all[:i][::-1][j])
+            operator.append(R_layer)
+            for j in range(i):
+                operator.append(S_all[:i][j])
+
+    operator.append(init_state)
+    state = np.linalg.multi_dot(operator)
+
+    norm = np.sqrt(sum([i**2 for i in state]))
+    y2 = state/norm
+    
+    return (x1,y1), (x2,y2), amount_of_R, amount_of_T, runs
+    
+    
+#Function to plot the expected vs simulated
+def sim_vs_exp_plot(T_circuit):#qc1 -> )Simulated; qc2 -> Expected 
+    
+    print(T_circuit)
+#    amount_of_R = T_circuit[2]
+#    amount_of_T = T_circuit[3]
+#    runs = T_circuit[4]
+    
+    [amount_of_R, amount_of_T, runs] = [T_circuit[i] for i in range(2,5)]
+    [x1, y1, x2, y2] = [T_circuit[int(i)][int(j)] for i,j in binary(2)]
+   # T_circuit[0][0], T_circuit[0][1], T_circuit[1][0], T_circuit[1][1]
+    
+    
+
+    g1=plt.scatter(x1,y1,marker='o',s=80,label='simulated')
+    g2=plt.scatter(x2,y2,marker='+',s=90,label='expected')
+    plt.legend(loc="upper right")    
+    
+    plt.xticks(fontsize=16)
+    plt.yticks(fontsize=16)
+    plt.title('N = %s and T^%s \n with %s shots'%(amount_of_R,amount_of_T,runs))  
+    #plt.savefig('N = %s and T^%s with %s shots.pdf'%(amount_of_R,amount_of_T,runs))
+    #plt.close()
+
+    plt.draw() 
+    return plt.show()
+
+
